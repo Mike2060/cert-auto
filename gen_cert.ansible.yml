@@ -59,6 +59,7 @@
       community.crypto.openssl_csr_pipe:
         privatekey_path: "./certs/{{ item.hostname }}/{{ item.hostname }}.key"
         subject_alt_name: "{{ (['IP:'] | product(item.ip) | map('join')) + (['DNS:'] | product(item.dns) | map('join')) }}"
+        subject_alt_name_critical: true
       loop: "{{ config }}"
       register: csr
 
