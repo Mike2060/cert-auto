@@ -1,0 +1,72 @@
+- name: Auto-generate certificate by config
+  hosts: localhost
+  connection: local
+  vars:
+    common_name: "Self Signed CA"
+  tasks:
+    - name: Get content of remote file
+      ansible.builtin.slurp:
+        src: ./instances.yml
+      register: config_file
+
+    - name: Interpret remote file content as yaml
+      ansible.builtin.set_fact:
+        config: "{{ config_file.content | b64decode | from_yaml }}"
+
+    - name: Create folder for certs
+      ansible.builtin.file:
+        path: "./certs"
+        state: directory
+        mode: "0755"
+
+    - name: Create private key
+      community.crypto.openssl_privatekey:
+        path: ./certs/ca.key
+
+    - name: Create certificate signing request (CSR) for CA certificate
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: ./certs/ca.key
+        common_name: "{{ common_name }}"
+        use_common_name_for_san: false # since we do not specify SANs, don't use CN as a SAN
+        basic_constraints:
+          - "CA:TRUE"
+        basic_constraints_critical: true
+        key_usage:
+          - keyCertSign
+        key_usage_critical: true
+      register: ca_csr
+
+    - name: Create self-signed CA certificate from CSR
+      community.crypto.x509_certificate:
+        path: ./certs/ca.pem
+        csr_content: "{{ ca_csr.csr }}"
+        privatekey_path: ./certs/ca.key
+        provider: selfsigned
+
+    - name: Create folder for each host
+      ansible.builtin.file:
+        path: "./certs/{{ item.hostname }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ config }}"
+
+    - name: Create private key for new certificate
+      community.crypto.openssl_privatekey:
+        path: "./certs/{{ item.hostname }}/{{ item.hostname }}.key"
+      loop: "{{ config }}"
+
+    - name: Create certificate signing request (CSR) for new certificate
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "./certs/{{ item.hostname }}/{{ item.hostname }}.key"
+        subject_alt_name: "{{ (['IP:'] | product(item.ip) | map('join')) + (['DNS:'] | product(item.dns) | map('join')) }}"
+      loop: "{{ config }}"
+      register: csr
+
+    - name: Sign certificate with our CA
+      community.crypto.x509_certificate:
+        path: "./certs/{{ item.item.hostname }}/{{ item.item.hostname }}.pem"
+        csr_content: "{{ item.csr }}"
+        provider: ownca
+        ownca_path: ./certs/ca.pem
+        ownca_privatekey_path: ./certs/ca.key
+      loop: "{{ csr.results }}"
